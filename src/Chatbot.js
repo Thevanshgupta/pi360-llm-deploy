@@ -3,6 +3,13 @@ import './Chatbot.css';
 import Grievance from './Grievance';
 import emailjs from 'emailjs-com';
 
+const ROWS_PER_PAGE = 30;
+
+const COLUMN_FRIENDLY_NAMES = {
+  "COUNT(t1.ResearchCode)": "Count of Research",
+  // Add more mappings as needed
+};
+
 const Chatbot = () => {
   // State for chat functionality
   const [messages, setMessages] = useState([]);
@@ -13,6 +20,14 @@ const Chatbot = () => {
   const [showHistory, setShowHistory] = useState(false);
   const [showGrievance, setShowGrievance] = useState(false);
   const chatWindowRef = useRef(null);
+
+  // --- Table Pagination State ---
+  const [tableRows, setTableRows] = useState([]); // Rows currently shown
+  const [tableAllRows, setTableAllRows] = useState([]); // All rows fetched so far
+  const [tableOffset, setTableOffset] = useState(0); // Offset for next fetch
+  const [tableHasMore, setTableHasMore] = useState(false); // If more rows available
+  const [tableLoadingMore, setTableLoadingMore] = useState(false); // Loading more rows
+  const [tableMessageId, setTableMessageId] = useState(null); // Message id for which table is shown
 
   // Initialize EmailJS
   useEffect(() => {
@@ -28,6 +43,32 @@ const Chatbot = () => {
     conference: 'https://pi360-chatbot-rag.theshinchangupta.workers.dev',
   };
 
+  // Reset table state when new message with table is received
+  useEffect(() => {
+    // Find latest bot message with table data
+    const lastBotMsg = [...messages].reverse().find(m => m.response && Array.isArray(m.response.rawData) && m.response.rawData.length > 0);
+    if (lastBotMsg && lastBotMsg.id !== tableMessageId) {
+      setTableAllRows(lastBotMsg.response.rawData);
+      setTableRows(lastBotMsg.response.rawData.slice(0, ROWS_PER_PAGE));
+      setTableOffset(ROWS_PER_PAGE);
+      setTableHasMore(lastBotMsg.response.rawData.length > ROWS_PER_PAGE);
+      setTableLoadingMore(false);
+      setTableMessageId(lastBotMsg.id);
+    }
+  }, [messages]);
+
+  // Handler for Load More (UI only, for now)
+  const handleLoadMoreRows = () => {
+    setTableLoadingMore(true);
+    setTimeout(() => {
+      const nextRows = tableAllRows.slice(tableOffset, tableOffset + ROWS_PER_PAGE);
+      setTableRows(prev => [...prev, ...nextRows]);
+      setTableOffset(prev => prev + ROWS_PER_PAGE);
+      setTableHasMore(tableAllRows.length > tableOffset + ROWS_PER_PAGE);
+      setTableLoadingMore(false);
+    }, 400); // Simulate loading
+  };
+
   // Helper function to maintain conversation history
   const updateConversationHistory = (newPair) => {
     setConversationHistory(prev => {
@@ -41,7 +82,7 @@ const Chatbot = () => {
 
     const csvContent = [
       Object.keys(data[0]).join(','),
-      ...data.map(item => 
+      ...data.map(item =>
         Object.values(item)
           .map(value => `"${value}"`.replace(/\n/g, ' '))
           .join(',')
@@ -51,8 +92,8 @@ const Chatbot = () => {
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
-    
-    link.setAttribute('href', url); 
+
+    link.setAttribute('href', url);
     link.setAttribute('download', filename);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
@@ -79,9 +120,9 @@ const Chatbot = () => {
           ],
         }),
       });
-  
+
       if (!response.ok) throw new Error(`Beautification failed: ${response.statusText}`);
-      
+
       const data = await response.json();
       let beautified = data.response;
 
@@ -93,7 +134,7 @@ const Chatbot = () => {
           .replace(/\.{2,}/g, '.')
           .trim();
       };
-  
+
       return cleanResponse(beautified);
     } catch (error) {
       console.error('Formatting Error:', error);
@@ -102,14 +143,14 @@ const Chatbot = () => {
     }
   };
 
-  const renderTable = (data) => {
+  const renderTable = (data, onLoadMore, hasMore, loadingMore) => {
     if (!data || data.length === 0) return <p>No data available</p>;
     const keys = Object.keys(data[0]);
-    
+
     return (
       <div className="table-container">
         <div className="export-button-container">
-          <button 
+          <button
             className="export-csv-button"
             onClick={() => exportCSV(data, `export-${Date.now()}.csv`)}
           >
@@ -118,7 +159,7 @@ const Chatbot = () => {
         </div>
         <table className="data-table">
           <thead>
-            <tr>{keys.map((key) => <th key={key}>{key}</th>)}</tr>
+            <tr>{keys.map((key) => <th key={key}>{COLUMN_FRIENDLY_NAMES[key] || key}</th>)}</tr>
           </thead>
           <tbody>
             {data.map((item, index) => (
@@ -126,6 +167,13 @@ const Chatbot = () => {
             ))}
           </tbody>
         </table>
+        {hasMore && (
+          <div style={{ textAlign: 'center', margin: '16px 0' }}>
+            <button className="load-more-button" onClick={onLoadMore} disabled={loadingMore}>
+              {loadingMore ? 'Loading...' : 'Load More'}
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -134,13 +182,13 @@ const Chatbot = () => {
     if (input.trim() === '') return;
 
     const tempId = Date.now();
-    const userMessage = { 
+    const userMessage = {
       id: tempId,
-      type: 'user', 
+      type: 'user',
       content: input,
       timestamp: new Date().getTime()
     };
-    
+
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
@@ -170,7 +218,7 @@ const Chatbot = () => {
         const errorText = await workerResponse.text();
         throw new Error(`Failed to generate SQL query: ${workerResponse.status} - ${errorText}`);
       }
-      
+
       const workerData = await workerResponse.json();
       const sqlQuery = workerData.query;
 
@@ -183,12 +231,12 @@ const Chatbot = () => {
         const errorText = await chatResponse.text();
         throw new Error(`Database error: ${chatResponse.status} - ${errorText}`);
       }
-      
+
       const chatData = await chatResponse.json();
-      
+
       if (chatData.response_code === "200") {
         const beautified = await beautifyResponse(chatData.content, input, conversationHistory);
-        
+
         const responseData = {
           sql: sqlQuery,
           rawData: chatData.content,
@@ -200,9 +248,9 @@ const Chatbot = () => {
           response: responseData
         });
 
-        setMessages(prev => prev.map(msg => 
+        setMessages(prev => prev.map(msg =>
           msg.id === tempId
-            ? {...msg, response: responseData}
+            ? { ...msg, response: responseData }
             : msg
         ));
       } else {
@@ -210,9 +258,9 @@ const Chatbot = () => {
       }
     } catch (error) {
       console.error('Fetch Error:', error);
-      setMessages(prev => prev.map(msg => 
+      setMessages(prev => prev.map(msg =>
         msg.id === tempId
-          ? {...msg, error: `Error: ${error.message}`}
+          ? { ...msg, error: `Error: ${error.message}` }
           : msg
       ));
     } finally {
@@ -220,7 +268,7 @@ const Chatbot = () => {
     }
   };
 
-  const renderResponse = (response, error) => {
+  const renderResponse = (response, error, paginatedTableState) => {
     if (error) {
       return (
         <div className="error-message">
@@ -229,11 +277,17 @@ const Chatbot = () => {
       );
     }
     if (!response) return null;
-    
+
+    // paginatedTableState: { rows, onLoadMore, hasMore, loadingMore }
     return (
       <div className="bot-response">
         <div className="beautified-response">{response.beautified}</div>
-        {renderTable(response.rawData)}
+        {renderTable(
+          paginatedTableState.rows,
+          paginatedTableState.onLoadMore,
+          paginatedTableState.hasMore,
+          paginatedTableState.loadingMore
+        )}
       </div>
     );
   };
@@ -254,23 +308,23 @@ const Chatbot = () => {
             {section.charAt(0).toUpperCase() + section.slice(1)}
           </button>
         ))}
-        <button 
+        <button
           className="grievance-button"
           onClick={() => setShowGrievance(true)}
         >
           feedback Section
         </button>
       </div>
-      
+
       <div className="history-controls">
-        <button 
+        <button
           className="history-toggle"
           onClick={() => setShowHistory(!showHistory)}
         >
           {showHistory ? 'Hide Context' : 'Show Context'}
         </button>
         {showHistory && (
-          <button 
+          <button
             className="clear-history"
             onClick={() => setConversationHistory([])}
           >
@@ -292,23 +346,42 @@ const Chatbot = () => {
           </ul>
         </div>
       )}
-      
+
       <div className="chat-window" ref={chatWindowRef}>
-        {messages.map((message) => (
-          <div key={message.id} className="message-container">
-            <div className={`message ${message.type}`}>
-              <div className="message-content">
-                {message.type === 'user' ? (
-                  <div className="user-icon">You</div>
-                ) : (
-                  <div className="bot-icon">Bot</div>
-                )}
-                <div className="text-content">{message.content}</div>
+        {messages.map((message) => {
+          const isLatestTableMsg = message.id === tableMessageId && Array.isArray(message.response?.rawData) && message.response.rawData.length > 0;
+          let paginatedTableState;
+          if (isLatestTableMsg) {
+            paginatedTableState = {
+              rows: tableRows,
+              onLoadMore: handleLoadMoreRows,
+              hasMore: tableHasMore,
+              loadingMore: tableLoadingMore
+            };
+          } else {
+            paginatedTableState = {
+              rows: (message.response && Array.isArray(message.response.rawData)) ? message.response.rawData : [],
+              onLoadMore: null,
+              hasMore: false,
+              loadingMore: false
+            };
+          }
+          return (
+            <div key={message.id} className="message-container">
+              <div className={`message ${message.type}`}>
+                <div className="message-content">
+                  {message.type === 'user' ? (
+                    <div className="user-icon">You</div>
+                  ) : (
+                    <div className="bot-icon">Bot</div>
+                  )}
+                  <div className="text-content">{message.content}</div>
+                </div>
               </div>
+              {renderResponse(message.response, message.error, paginatedTableState)}
             </div>
-            {renderResponse(message.response, message.error)}
-          </div>
-        ))}
+          );
+        })}
         {isLoading && (
           <div className="typing-indicator">
             <div className="dot"></div>
@@ -327,8 +400,8 @@ const Chatbot = () => {
             placeholder="Type your message..."
             onKeyPress={(e) => e.key === 'Enter' && handleSend()}
           />
-          <button 
-            onClick={handleSend} 
+          <button
+            onClick={handleSend}
             disabled={isLoading}
             className="send-button"
           >
